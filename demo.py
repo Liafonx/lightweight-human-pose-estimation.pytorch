@@ -1,4 +1,5 @@
 import argparse
+import time
 
 import cv2
 import numpy as np
@@ -63,7 +64,7 @@ def infer_fast(net, img, net_input_height_size, stride, upsample_ratio, cpu,
 
     tensor_img = torch.from_numpy(padded_img).permute(2, 0, 1).unsqueeze(0).float()
     if not cpu:
-        tensor_img = tensor_img.cuda()
+        tensor_img = tensor_img.to("mps")
 
     stages_output = net(tensor_img)
 
@@ -81,14 +82,28 @@ def infer_fast(net, img, net_input_height_size, stride, upsample_ratio, cpu,
 def run_demo(net, image_provider, height_size, cpu, track, smooth):
     net = net.eval()
     if not cpu:
-        net = net.cuda()
+        net = net.to("mps")
+
+    # scale = resize / max(frame.shape[0], frame.shape[1])
+    frame_width = int(image_provider.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(image_provider.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    size = (frame_width, frame_height)
+    fps = int(image_provider.get(cv2.CAP_PROP_FPS))
+
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(f'./data/output.mp4', fourcc, fps, size)
 
     stride = 8
     upsample_ratio = 4
     num_keypoints = Pose.num_kpts
     previous_poses = []
     delay = 1
-    for img in image_provider:
+    start_time = time.time()
+    while True:
+        success, img = frame_provider.read()
+        if not success:
+            break
+    # for img in image_provider:
         orig_img = img.copy()
         heatmaps, pafs, scale, pad = infer_fast(net, img, height_size, stride, upsample_ratio, cpu)
 
@@ -113,28 +128,31 @@ def run_demo(net, image_provider, height_size, cpu, track, smooth):
             pose = Pose(pose_keypoints, pose_entries[n][18])
             current_poses.append(pose)
 
-        if track:
-            track_poses(previous_poses, current_poses, smooth=smooth)
-            previous_poses = current_poses
+        # if track:
+        #     track_poses(previous_poses, current_poses, smooth=smooth)
+        #     previous_poses = current_poses
         for pose in current_poses:
             pose.draw(img)
         img = cv2.addWeighted(orig_img, 0.6, img, 0.4, 0)
-        for pose in current_poses:
-            cv2.rectangle(img, (pose.bbox[0], pose.bbox[1]),
-                          (pose.bbox[0] + pose.bbox[2], pose.bbox[1] + pose.bbox[3]), (0, 255, 0))
-            if track:
-                cv2.putText(img, 'id: {}'.format(pose.id), (pose.bbox[0], pose.bbox[1] - 16),
-                            cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 255))
-        cv2.imshow('Lightweight Human Pose Estimation Python Demo', img)
-        key = cv2.waitKey(delay)
-        if key == 27:  # esc
-            return
-        elif key == 112:  # 'p'
-            if delay == 1:
-                delay = 0
-            else:
-                delay = 1
-
+        # for pose in current_poses:
+        #     cv2.rectangle(img, (pose.bbox[0], pose.bbox[1]),
+        #                   (pose.bbox[0] + pose.bbox[2], pose.bbox[1] + pose.bbox[3]), (0, 255, 0))
+        #     if track:
+        #         cv2.putText(img, 'id: {}'.format(pose.id), (pose.bbox[0], pose.bbox[1] - 16),
+        #                     cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 255))
+        # cv2.imshow('Lightweight Human Pose Estimation Python Demo', img)
+        # print(img.shape)
+        out.write(img)
+        # key = cv2.waitKey(delay)
+        # if key == 27:  # esc
+        #     return
+        # elif key == 112:  # 'p'
+        #     if delay == 1:
+        #         delay = 0
+        #     else:
+        #         delay = 1
+    print("--- %s seconds ---" % (time.time() - start_time))
+    out.release()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
@@ -154,13 +172,18 @@ if __name__ == '__main__':
         raise ValueError('Either --video or --image has to be provided')
 
     net = PoseEstimationWithMobileNet()
-    checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
+    checkpoint = torch.load(args.checkpoint_path, map_location='mps')
     load_state(net, checkpoint)
 
     frame_provider = ImageReader(args.images)
     if args.video != '':
-        frame_provider = VideoReader(args.video)
+        frame_provider = cv2.VideoCapture(args.video)
     else:
         args.track = 0
 
+
     run_demo(net, frame_provider, args.height_size, args.cpu, args.track, args.smooth)
+    frame_provider.release()
+
+# Video with visual: --- 185.75089025497437 seconds ---
+# Video without visual: --- 184.7183609008789 seconds ---
